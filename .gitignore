@@ -2,3 +2,4 @@ node_modules/
 solanalog-x/
 dist/
 build/
+.env

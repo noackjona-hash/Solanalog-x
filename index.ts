@@ -6,9 +6,15 @@ let connection: Connection;
 let subscriptionId: number | null = null;
 let reconnectTimeout: NodeJS.Timeout;
 
+const showOnlyErrors = process.argv.includes('--errors');
+const showOnlyHeavy = process.argv.includes('--heavy');
+
 console.clear();
 console.log(chalk.magenta.bold('=================================================='));
-console.log(chalk.cyan.bold('   🔍 SolanaLog-X: Resilient Analyzer Pro v1.1   '));
+console.log(chalk.cyan.bold('   🔍 SolanaLog-X: Resilient Analyzer Pro v1.2   '));
+if (showOnlyErrors) console.log(chalk.red.bold('   ⚠️ MODE: Only showing CRASHES (--errors)'));
+else if (showOnlyHeavy) console.log(chalk.yellow.bold('   ⚠️ MODE: Only showing HIGH CU USAGE >80% (--heavy)'));
+else console.log(chalk.green('   ✨ MODE: Streaming ALL transactions'));
 console.log(chalk.magenta.bold('==================================================\n'));
 
 function startLogListener() {
@@ -18,7 +24,7 @@ function startLogListener() {
         }
 
         connection = new Connection(ENDPOINT, 'confirmed');
-        console.log(chalk.blue(`[${new Date().toLocaleTimeString()}] Verbinde mit RPC WebSocket...`));
+        console.log(chalk.blue(`[${new Date().toLocaleTimeString()}] Connected to RPC WebSocket...`));
 
         const cuRegex = /consumed (\d+) of (\d+) compute units/;
 
@@ -27,6 +33,7 @@ function startLogListener() {
             (logs, context) => {
                 try {
                     let hasError = false;
+                    let isHeavy = false;
                     let errorMsg = '';
                     const parsedLines: string[] = [];
 
@@ -41,13 +48,15 @@ function startLogListener() {
                         if (cuMatch) {
                             const used = parseInt(cuMatch[1]);
                             const total = parseInt(cuMatch[2]);
-                            const pct = ((used / total) * 100).toFixed(1);
+                            const pct = ((used / total) * 100);
+                            
+                            if (pct > 80) isHeavy = true;
 
                             let color = chalk.green;
-                            if (parseFloat(pct) > 80) color = chalk.red.bold;
-                            else if (parseFloat(pct) > 50) color = chalk.yellow;
+                            if (pct > 80) color = chalk.red.bold;
+                            else if (pct > 50) color = chalk.yellow;
 
-                            parsedLines.push(`    ⚡ ${color(`${pct}% CUs used`)} (${used}/${total})`);
+                            parsedLines.push(`    ⚡ ${color(`${pct.toFixed(1)}% CUs used`)} (${used}/${total})`);
                             return;
                         }
 
@@ -59,19 +68,23 @@ function startLogListener() {
                     });
 
                     if (hasError) {
+                        if (showOnlyHeavy) return;
                         console.log(chalk.red.bold(`❌ [CRASH] Slot: ${context.slot}`));
                         console.log(chalk.gray(`   Sig: ${logs.signature}`));
                         console.log(chalk.red(`   🚨 Error: "${errorMsg}"`));
                         if (parsedLines.length > 0) console.log(parsedLines.join('\n'));
                         console.log(chalk.red(`==================================================\n`));
                     } else if (parsedLines.length > 0) {
+                        if (showOnlyErrors) return;
+                        if (showOnlyHeavy && !isHeavy) return;
+                        
                         console.log(chalk.green.bold(`✅ [SUCCESS] Slot: ${context.slot}`));
                         console.log(chalk.gray(`   Sig: ${logs.signature}`));
                         console.log(parsedLines.join('\n'));
                         console.log(chalk.gray(`--------------------------------------------------\n`));
                     }
                 } catch (parseError) {
-                    console.log(chalk.red(`⚠️ Fehler beim Parsen einer Transaktion: ${parseError}`));
+                    console.log(chalk.red(`⚠️ Parse-Error: ${parseError}`));
                 }
             },
             'confirmed'
@@ -79,12 +92,12 @@ function startLogListener() {
 
         // @ts-ignore
         connection._rpcWebSocket.on('close', () => {
-            console.log(chalk.red(`\n🚨 WebSocket-Verbindung verloren! Starte Reconnect in 5 Sekunden...`));
+            console.log(chalk.red(`\n🚨 WebSocket closed! Reconnecting in 5s...`));
             triggerReconnect();
         });
 
     } catch (error) {
-        console.log(chalk.red(`Fehler beim Verbindungsaufbau: ${error}. Reconnect in 5s...`));
+        console.log(chalk.red(`Connection error: ${error}. Reconnecting in 5s...`));
         triggerReconnect();
     }
 }

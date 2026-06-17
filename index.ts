@@ -1,7 +1,12 @@
 import { Connection, clusterApiUrl } from '@solana/web3.js';
 import chalk from 'chalk';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const ENDPOINT = clusterApiUrl('devnet');
+const LOG_FILE_PATH = path.join(__dirname, 'solanalog-x.log');
+const MAX_LOG_SIZE_BYTES = 10 * 1024;
+
 let connection: Connection;
 let subscriptionId: number | null = null;
 let reconnectTimeout: NodeJS.Timeout;
@@ -11,11 +16,29 @@ const showOnlyHeavy = process.argv.includes('--heavy');
 
 console.clear();
 console.log(chalk.magenta.bold('=================================================='));
-console.log(chalk.cyan.bold('   🔍 SolanaLog-X: Resilient Analyzer Pro v1.2   '));
+console.log(chalk.cyan.bold('   🔍 SolanaLog-X: Resilient Analyzer Pro v1.3   '));
 if (showOnlyErrors) console.log(chalk.red.bold('   ⚠️ MODE: Only showing CRASHES (--errors)'));
 else if (showOnlyHeavy) console.log(chalk.yellow.bold('   ⚠️ MODE: Only showing HIGH CU USAGE >80% (--heavy)'));
 else console.log(chalk.green('   ✨ MODE: Streaming ALL transactions'));
 console.log(chalk.magenta.bold('==================================================\n'));
+
+function writeToLogFile(text: string) {
+    try {
+        const timestamp = new Date().toISOString();
+        const logEntry = `[${timestamp}] ${text}\n`;
+
+        if (fs.existsSync(LOG_FILE_PATH)) {
+            const stats = fs.statSync(LOG_FILE_PATH);
+            if (stats.size > MAX_LOG_SIZE_BYTES) {
+                fs.writeFileSync(LOG_FILE_PATH, `[LOG ROTATION - FILE CLEARED]\n`);
+            }
+        }
+
+        fs.appendFileSync(LOG_FILE_PATH, logEntry);
+    } catch (err) {
+        console.log(chalk.red(`⚠️ Fehler beim Schreiben in Log-Datei: ${err}`));
+    }
+}
 
 function startLogListener() {
     try {
@@ -25,6 +48,7 @@ function startLogListener() {
 
         connection = new Connection(ENDPOINT, 'confirmed');
         console.log(chalk.blue(`[${new Date().toLocaleTimeString()}] Connected to RPC WebSocket...`));
+        writeToLogFile('SYSTEM: Connected to RPC WebSocket.');
 
         const cuRegex = /consumed (\d+) of (\d+) compute units/;
 
@@ -68,13 +92,19 @@ function startLogListener() {
                     });
 
                     if (hasError) {
+                        writeToLogFile(`CRASH [Slot ${context.slot}]: ${errorMsg} (Sig: ${logs.signature})`);
                         if (showOnlyHeavy) return;
+                        
                         console.log(chalk.red.bold(`❌ [CRASH] Slot: ${context.slot}`));
                         console.log(chalk.gray(`   Sig: ${logs.signature}`));
                         console.log(chalk.red(`   🚨 Error: "${errorMsg}"`));
                         if (parsedLines.length > 0) console.log(parsedLines.join('\n'));
                         console.log(chalk.red(`==================================================\n`));
                     } else if (parsedLines.length > 0) {
+                        if (isHeavy) {
+                            writeToLogFile(`HEAVY PERFORMANCE [Slot ${context.slot}]: Sig: ${logs.signature}`);
+                        }
+
                         if (showOnlyErrors) return;
                         if (showOnlyHeavy && !isHeavy) return;
                         
@@ -93,6 +123,7 @@ function startLogListener() {
         // @ts-ignore
         connection._rpcWebSocket.on('close', () => {
             console.log(chalk.red(`\n🚨 WebSocket closed! Reconnecting in 5s...`));
+            writeToLogFile('SYSTEM: WebSocket connection lost. Triggering reconnect.');
             triggerReconnect();
         });
 
@@ -113,6 +144,7 @@ startLogListener();
 
 process.on('SIGINT', async () => {
     console.log(chalk.yellow('\nBeende WebSocket Stream sauber...'));
+    writeToLogFile('SYSTEM: Process terminated by user.');
     clearTimeout(reconnectTimeout);
     if (subscriptionId !== null && connection) {
         await connection.removeOnLogsListener(subscriptionId).catch(() => {});
